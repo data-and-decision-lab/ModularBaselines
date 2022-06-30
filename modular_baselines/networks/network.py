@@ -3,19 +3,30 @@ import torch
 import numpy as np
 from gym.spaces import Space, Box, Discrete
 
-
-class SharedFeatureNetwork(torch.nn.Module):
-
+class BaseNetwork(torch.nn.Module):
     def __init__(self, observation_space: Space, action_space: Space, hidden_size: int = 128):
         super().__init__()
-
-        self.observation_space = observation_space
-        self.action_space = action_space
+        self.observation_space=observation_space
+        self.action_space=action_space
+        self.hidden_size=hidden_size
 
         self.in_size = observation_space.shape[0]
         self.out_size = action_space.shape[0]
         if isinstance(action_space, Box):
             self.out_size = self.out_size * 2
+
+    def save(self, path:str):
+        torch.save(self.state_dict(), path)
+    
+    def load(self, path:str):
+        self.load_state_dict(torch.load(path))
+
+class SharedFeatureNetwork(BaseNetwork):
+
+    def __init__(self, observation_space: Space, action_space: Space, hidden_size: int):
+        super().__init__(observation_space=observation_space,
+                                                   action_space=action_space,
+                                                   hidden_size=hidden_size)
 
         self.hidden_size = hidden_size
         self.feature = torch.nn.Sequential(
@@ -49,17 +60,10 @@ class SharedFeatureNetwork(torch.nn.Module):
         return dist, None, value
 
 
-class SeparateFeatureNetwork(torch.nn.Module):
+class SeparateFeatureNetwork(BaseNetwork):
 
     def __init__(self, observation_space: Space, action_space: Space, policy_hidden_size: int = 64, value_hidden_size: int = 64):
-        super().__init__()
-        self.observation_space = observation_space
-        self.action_space = action_space
-
-        self.in_size = observation_space.shape[0]
-        self.out_size = action_space.shape[0]
-        if isinstance(action_space, Box):
-            self.out_size = self.out_size * 2
+        super().__init__(observation_space = observation_space, action_space = action_space)
 
         self.policy_hidden_size = policy_hidden_size
         self.value_hidden_size = value_hidden_size
@@ -93,6 +97,53 @@ class SeparateFeatureNetwork(torch.nn.Module):
 
         dist = get_dist(logits, self.action_space)
         return dist, None, value
+
+
+class SeparateFeatureSACNetwork(BaseNetwork):
+    def __init__(self, observation_space: Space, action_space: Space, hidden_size: int):
+        super().__init__(observation_space = observation_space,
+                                         action_space = action_space,
+                                         hidden_size = hidden_size)
+
+        self.value_net_1 = torch.nn.Sequential(
+            layer_init(torch.nn.Linear(self.in_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, 1), std=1.0)
+        )        
+
+        self.value_net_2 = torch.nn.Sequential(
+            layer_init(torch.nn.Linear(self.in_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, 1), std=1.0)
+        ) 
+
+        self.policy_net = torch.nn.Sequential(
+            layer_init(torch.nn.Linear(self.in_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, self.hidden_size)),
+            torch.nn.Tanh(),
+            layer_init(torch.nn.Linear(self.hidden_size, self.out_size), std=0.01)
+        )
+    
+    def forward(self, states: torch.Tensor) -> Tuple[torch.distributions.Normal, torch.Tensor, torch.Tensor]:
+        """ Return policy distribution, value_1 and value_2
+        Args:
+            state (torch.Tensor): State tensor
+        Returns:
+            Tuple[torch.distributions.Normal, torch.Tensor, torch.Tensor]: 
+                policy distribution, value_1, value_2
+        """
+        value_1 = self.value_net_1(states)
+        value_2 = self.value_net_2(states)
+        logits = self.policy_net(states)
+
+        dist = get_dist(logits, self.action_space)
+
+        return dist,value_1,value_2
 
 
 def layer_init(layer, std: float = np.sqrt(2), bias_const: float = 0.0):
